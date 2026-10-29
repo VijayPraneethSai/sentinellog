@@ -75,27 +75,30 @@ make the eval numbers meaningless.
 
 ## Real-data validation
 
-Beyond the synthetic eval, the unmodified pipeline was also run against a
-real one-day slice of public Cowrie SSH honeypot traffic (via an adapter
-in `sentinellog/adapters/cowrie.py`). That run exposed a real gap: the
-detector's original threshold, calibrated from published automated-scanner
-rates, caught **zero** incidents on real traffic, because real
-credential-stuffing in this sample runs slower (~1 attempt/sec) than the
-rapid-fire rate it was tuned to. The threshold was re-tuned against a
-window/threshold sweep over the real data (`scripts/sweep_threshold.py`),
-with no regression on the synthetic eval afterward.
+Beyond the synthetic eval, the unmodified pipeline was run against real
+Cowrie SSH honeypot traffic in two passes. First, a single real day
+exposed a real gap: the detector's original threshold, calibrated from
+published automated-scanner rates, caught **zero** incidents on real
+traffic, because real credential-stuffing runs slower than the rapid-fire
+rate it was tuned to. Re-tuned with a window/threshold sweep
+(`scripts/sweep_threshold.py`) against that day, with no regression on
+the synthetic eval afterward.
 
-Breaking the real traffic down by behavior (`scripts/explain_unflagged.py`)
-gives a cleaner read than a raw alert count: of 102 attacking source IPs,
-82 only ever made 1-3 attempts (not a burst to catch), and of the 20 that
-mounted a real multi-attempt campaign, the retuned detector caught **100%
-of the 13 that attacked as a dense burst**. The other 7 spread their
-attempts thin instead -- one IP made 624 failed attempts over nearly 10
-hours, never more than 3 in any 2-minute window -- a deliberately
-slow-paced pattern the burst detector isn't designed to catch. That's a
-real, named scope limitation, not a silent miss; see "what I'd add next."
+Second, a **14-day real sample (59,681 login events, 855 source IPs)**
+was used for a non-circular validation (`scripts/independent_validation.py`):
+ground truth defined purely by total failed-login volume, sharing no
+logic with the detector's own window/threshold condition. Result:
+**92% recall** against that independent ground truth, with one real
+miss standing out -- a single IP made 386 failed attempts over two weeks
+and never once triggered the burst window, the same "low-and-slow"
+pattern found in the single-day sample, now confirmed at scale. Precision
+against this ground truth measured lower (31%), but most of those
+"false positives" turned out to be real 4-attempt bursts that just fell
+short of an admittedly arbitrary volume bar for ground truth -- a
+limitation of the validation's ground-truth definition, documented
+rather than hidden.
 
-Full writeup, including what this validation does and doesn't prove, in
+Full writeup, including what each pass does and doesn't prove, in
 [`docs/real_data_validation.md`](docs/real_data_validation.md).
 
 ## Configuration
@@ -113,9 +116,13 @@ python cli.py report data/auth_log.csv --top 20
 python eval.py                           # precision/recall against ground truth
 python -m pytest tests/ -q               # unit tests per detector
 
-# real-data validation
+# real-data validation (single day)
 python -m sentinellog.adapters.cowrie data/real_sample/cowrie_2019-12-04.sample.jsonl /tmp/real.csv
 python cli.py report /tmp/real.csv --top 10
+
+# real-data validation (14 days, non-circular)
+python -m sentinellog.adapters.cowrie data/real_sample_14day/*.jsonl /tmp/real14.csv
+python scripts/independent_validation.py /tmp/real14.csv
 ```
 
 Sample report output:
@@ -138,16 +145,18 @@ sentinellog/
     cowrie.py       # converts real Cowrie honeypot JSON logs into the pipeline's schema
 data/
   generate_logs.py  # calibrated synthetic log + label generator
-  real_sample/       # filtered real honeypot sample + attribution (see docs below)
+  real_sample/       # single real day, filtered + attribution (see docs below)
+  real_sample_14day/ # 14 contiguous real days, filtered + attribution
 docs/
   real_data_validation.md  # what changed when validated against real traffic, and why
 config.yaml         # all detector thresholds, documented inline
 cli.py              # `report` command
 eval.py             # incident-level recall + event-level precision/FP audit
 scripts/
-  sweep_threshold.py    # window x threshold sweep used to re-tune against real data
-  characterize_ips.py   # per-source-IP failed-login counts/timing on real data
-  explain_unflagged.py  # splits real attacking IPs into dense-burst vs low-and-slow
+  sweep_threshold.py        # window x threshold sweep used to re-tune against real data
+  characterize_ips.py       # per-source-IP failed-login counts/timing on real data
+  explain_unflagged.py      # splits real attacking IPs into dense-burst vs low-and-slow
+  independent_validation.py # non-circular recall/precision vs volume-only ground truth
 tests/               # unit tests per detector (dense vs sparse bursts, plausible
                        vs impossible travel, baseline-confidence gating)
 .github/workflows/ci.yml  # runs tests + both evals on every push

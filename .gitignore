@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 .pytest_cache/
 data/real_sample/*.converted.csv
+data/real_sample_14day/*.converted.csv

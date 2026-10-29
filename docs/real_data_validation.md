@@ -3,106 +3,111 @@
 The synthetic dataset (`data/generate_logs.py`) gives clean, checkable
 ground truth, but it's calibrated from *published statistics about*
 attacks, not from attacks themselves. This note covers what happened when
-the unmodified pipeline was pointed at a real honeypot capture.
+the unmodified pipeline was pointed at real honeypot capture, first for
+one day, then across a non-circular validation over two weeks.
 
 ## Data source
 
-A one-day slice (2019-12-04) of real Cowrie SSH/Telnet honeypot traffic
-from [`0xsha/sweetie-data`](https://github.com/0xsha/sweetie-data) (MIT
-licensed), a public three-month honeypot capture. Only `login.failed` /
-`login.success` events are used; the committed sample
-(`data/real_sample/cowrie_2019-12-04.sample.jsonl`) is pre-filtered to
-those 1,465 events out of the much larger raw daily log. Converted to
-SentinelLog's schema with `sentinellog/adapters/cowrie.py`.
+Real Cowrie SSH/Telnet honeypot traffic from
+[`0xsha/sweetie-data`](https://github.com/0xsha/sweetie-data) (MIT
+licensed), a public three-month honeypot capture. Two samples are used
+here:
+
+- `data/real_sample/` -- a single day (2019-12-04), used for the initial
+  threshold re-tuning below.
+- `data/real_sample_14day/` -- 14 contiguous days (2019-12-03 to
+  2019-12-16), matching the synthetic dataset's own 14-day window, used
+  for the independent validation further down. 59,681 login events
+  across 855 distinct source IPs.
+
+Only `login.failed` / `login.success` events are kept; converted to
+SentinelLog's schema with `sentinellog/adapters/cowrie.py` (`convert_many`
+combines multiple daily files into one chronological stream).
 
 Cowrie logs no geolocation, so this data only exercises the brute-force /
 credential-stuffing detector -- impossible-travel and off-baseline-time
 need lat/lon and a stable per-account identity, neither of which a
 honeypot (attackers trying random usernames against one box) provides.
-That's a real scope limit of this validation, not a bug: it tells you
-whether the burst detector generalizes to genuine attacker traffic, not
-whether the geo/time detectors do.
 
-## What changed
+## Step 1: threshold re-tuning (single day)
 
 The detector as originally calibrated (60s window, 6-failure threshold,
 based on published automated-scanner rates of ~3-5 attempts/sec) caught
-**zero** incidents on this real sample. Checking why: the densest real
-burst in the whole day was 5 failures in 60 seconds. Real opportunistic
-credential-stuffing here runs closer to ~1 attempt/sec with 4-5 guesses
-per session, not the rapid-fire automated-scanner rate the synthetic data
-was calibrated to.
+**zero** incidents on the one-day sample -- the densest real burst was 5
+failures in 60 seconds. A window/threshold sweep (`scripts/sweep_threshold.py`)
+led to `window=120s, threshold=4`, now the default in `config.yaml`.
 
-A window/threshold sweep (`scripts/sweep_threshold.py`) over the real sample:
+## Step 2: why the first "100%" result was misleading
 
-| window | thresh=3 | thresh=4 | thresh=5 | thresh=6 |
-|---|---|---|---|---|
-| 60s  | 26 IPs | 11 IPs | 1 IP | 0 IPs |
-| 120s | 28 IPs | 13 IPs | 1 IP | 1 IP |
-| 300s | 29 IPs | 14 IPs | 3 IPs | 3 IPs |
+An initial pass (`scripts/explain_unflagged.py`) reported the retuned
+detector caught 100% of "dense-burst" attacking IPs. That number is close
+to circular: "dense burst" was defined as *exactly* the detector's own
+firing condition (>=4 failures in any 120s window), so the result mostly
+confirmed the code correctly implements its own rule -- not that the rule
+is a good one. It's not worthless (it did catch real implementation bugs
+along the way: timezone handling, window-boundary off-by-ones), but it
+isn't real validation of detection quality.
 
-(out of 102 distinct source IPs in the sample)
+## Step 3: independent, non-circular validation (14 days)
 
-`window=120s, threshold=4` was chosen: it catches a meaningfully larger
-slice of real attacker IPs than the original setting without the
-threshold getting so loose that occasional-failed-login noise would
-start tripping it (threshold=3 roughly doubles the catch again, but
-starts looking more like "logged in wrong more than twice," which is
-closer to ordinary user error than an attack signal).
-
-This is now the default in `config.yaml`. Re-running the full synthetic
-eval (`eval.py`) after the change showed no regression -- synthetic
-brute-force incidents are dense enough (25-90 rapid attempts) that they
-still trip the looser threshold immediately, so the real-world retune
-cost nothing on the calibration data it was originally checked against.
-
-## Result on the real sample (post-retune)
+`scripts/independent_validation.py` fixes this: it defines "this IP is a
+real attacker" using a ground truth that shares **no logic** with the
+detector -- total failed-login volume across the whole 14-day sample
+(>=8 failed logins total, no window or rate involved at all), then
+measures the detector's recall/precision against that independent label.
 
 ```
-$ python cli.py report data/real_sample/cowrie_2019-12-04.converted.csv
+Independent ground truth (>= 8 failed logins total, 14 days): 73 IPs
+Detector flagged: 214 distinct source IPs
+
+Recall:    67/73 real attackers caught (92%)
+Precision: 67/214 flagged IPs were real attackers (31%)
 ```
 
-99 alerts across 1,465 login events (9 distinct attacking source IPs,
-several of which mount repeated bursts through the day rather than one
-continuous one -- e.g. source IP `144.91.113.246` alone accounts for
-several separate incident-start alerts as it pauses and resumes). No
-ground-truth labels exist for this data (a honeypot box receives no
-legitimate traffic, so there's no benign baseline to compute precision
-against) -- this validation checks generalization and realistic
-threshold-setting, not precision/recall. That's the synthetic dataset's
-job, and it's unaffected by this change (see `eval.py` output: still
-38/40 incidents, 95%, after the retune).
+**Recall (92%) is the headline number** and it's a real one -- no shared
+logic with the detector's firing condition.
 
-**Breaking the 102 source IPs down by actual behavior** (see
-`scripts/explain_unflagged.py`) makes the detector's real coverage
-clearer than a raw alert count does:
+**Precision (31%) looks weak in isolation but needs context.** Most of
+the 147 "false positive" IPs made exactly 4 failed attempts in a tight
+burst -- which is a real automated attack by any reasonable standard (no
+human fails a password 4 times in 10 seconds); they just didn't reach the
+*8-total-over-14-days* ground-truth bar. That bar measures sustained
+campaign size, not whether any single incident is real, so a chunk of
+these "false positives" are arguably correct detections that an
+imperfect ground-truth definition mislabels as noise. The honest
+takeaway is that the ground-truth threshold itself needs refinement (a
+per-incident definition, not a volume-over-time one) before precision
+here means what it looks like it means -- flagged as a next step below,
+not quietly fixed by re-running until the number looks better.
 
-- 82 of 102 IPs made only 1-3 failed attempts total across the whole
-  day -- reconnaissance noise, not something a burst detector is meant
-  to catch.
-- 20 IPs mounted a real multi-attempt campaign (4+ attempts). Of those,
-  **13 did it as a dense burst and the detector caught all 13 (100%)**.
-- The remaining **7 spread their attempts thin instead of dense** --
-  one IP (`142.93.232.144`) made **624 failed attempts over nearly 10
-  hours**, never more than 3 in any 120-second window. That's a
-  deliberately slow, "low-and-slow" credential-stuffing pattern, paced
-  specifically to stay under a burst threshold. The detector correctly
-  does not flag it, because it isn't built to -- this is a genuine scope
-  limitation, not a missed detection within the tool's design.
+**6 real misses, found and not hidden:**
 
-This is a better way to read the validation than "13/102 flagged
-overall": the detector doesn't miss bursts, it has a blind spot to a
-*different* attack pattern (sustained low-rate attempts), which would
-need a second, longer-window rate detector to cover -- see "what I'd
-add next" below.
+| src_ip | total failed logins (14 days) |
+|---|---|
+| 165.227.140.120 | 386 |
+| 185.146.87.99 | 161 |
+| 116.110.80.6 | 18 |
+| 167.172.227.233 | 13 |
+| 45.95.168.105 | 11 |
+| 46.217.248.7 | 8 |
+
+The top miss made **386 failed attempts over two weeks and never once hit
+4-in-120-seconds** -- the same low-and-slow pattern found in the
+single-day sample, now confirmed at larger scale and higher attempt
+counts.
 
 ## Honest limitations of this validation
 
-- One day, one honeypot, no labels -- this confirms the detector reacts
-  sensibly to real attacker behavior, not that 120s/4 is the universally
-  correct setting. A production deployment would want this tuned against
-  its own traffic.
-- No impossible-travel or off-baseline-time validation against real data
-  (no geo/stable-identity signal in honeypot logs, as noted above). That
-  would need a different real source -- e.g. a real org's VPN or SSO logs
-  -- which aren't publicly available for obvious reasons.
+- The ground-truth threshold (8 total failures) is a judgment call, not
+  a derived constant -- a stricter or looser bar would move both recall
+  and precision. The direction of the finding (real, substantial recall;
+  a genuine low-and-slow blind spot) holds across reasonable choices of
+  that bar; the exact percentages would shift.
+- Precision against this ground truth undercounts correct detections (see
+  above) -- a fairer precision measurement needs an independent
+  per-incident label, not a volume-over-time one. That's real follow-up
+  work, not a rounding error.
+- Still no validation for impossible-travel or off-baseline-time (no
+  geo/stable-identity signal in honeypot logs). That needs a different
+  real source -- e.g. a real org's VPN or SSO logs -- which aren't
+  publicly available for obvious reasons.

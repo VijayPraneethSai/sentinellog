@@ -1,0 +1,24 @@
+# SentinelLog detector configuration.
+# Tunable without touching code -- these were set by inspecting the
+# calibration data (see data/generate_logs.py docstring) and validated
+# against real honeypot traffic (see docs/real_data_validation.md).
+
+bruteforce:
+  # Originally calibrated to 60s/6 from published automated-scanner stats
+  # (Wilkens & Fischer 2020; SSHafe 2026), which describe dense ~3-5/sec
+  # bursts. Validated against a real Cowrie honeypot sample (see
+  # docs/real_data_validation.md) and found that real opportunistic
+  # credential-stuffing sessions in the wild run slower -- commonly ~1
+  # attempt/sec, 4-5 attempts per session, not a rapid burst. Re-tuned to
+  # 120s/4 to catch that real-world pattern; a sweep over window x
+  # threshold combinations is in docs/real_data_validation.md.
+  window_seconds: 120
+  fail_threshold: 4     # failed logins within window_seconds to trigger
+
+impossible_travel:
+  max_speed_kmh: 900     # ~commercial flight speed; deliberately generous
+                          # to avoid flagging ordinary travel/VPN hops
+
+off_baseline_time:
+  rarity_threshold: 0.03     # hour must be <3% of a user's own login history
+  min_baseline_events: 8     # below this, treat the user as unknown (no flag)

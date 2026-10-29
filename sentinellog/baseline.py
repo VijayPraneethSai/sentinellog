@@ -21,7 +21,7 @@ class UserBaseline:
         self.home_lon = home_lon
         self.n_events = n_events
 
-    def hour_rarity(self, hour: int) -> float:
+    def hour_rarity(self, hour: int, min_baseline_events: int = 8) -> float:
         """Fraction of this user's historical logins that happen at `hour`.
         A histogram-based z-score is the wrong tool here: most hours in a
         login histogram are near zero for every user (logins cluster in a
@@ -30,7 +30,7 @@ class UserBaseline:
         is this hour for this specific person." Low n_events -> treated as
         unknown (rarity=1.0, i.e. not flagged) rather than penalizing a
         user we barely have history for."""
-        if self.n_events < 8:
+        if self.n_events < min_baseline_events:
             return 1.0
         total = self.hour_counts.sum()
         if total < 1e-6:

@@ -123,7 +123,8 @@ def detect_impossible_travel(df: pd.DataFrame, max_speed_kmh: float = 900.0) -> 
 # 3. Off-baseline login-time detector
 # ---------------------------------------------------------------------
 def detect_off_baseline_time(df: pd.DataFrame, baselines: dict[str, UserBaseline],
-                              rarity_threshold: float = 0.03) -> list[Alert]:
+                              rarity_threshold: float = 0.03,
+                              min_baseline_events: int = 8) -> list[Alert]:
     """Flags a successful login at an hour-of-day this specific user almost
     never uses (rarity_threshold = fraction of their own history). Catches
     cases with no volume or geo signal at all (e.g. a replayed/stolen
@@ -136,7 +137,7 @@ def detect_off_baseline_time(df: pd.DataFrame, baselines: dict[str, UserBaseline
         if bl is None:
             continue
         hour = row["ts"].hour
-        rarity = bl.hour_rarity(hour)
+        rarity = bl.hour_rarity(hour, min_baseline_events=min_baseline_events)
         if rarity < rarity_threshold:
             score = min(1.0, 1.0 - rarity / rarity_threshold)
             alerts.append(Alert(

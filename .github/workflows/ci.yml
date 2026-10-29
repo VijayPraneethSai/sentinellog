@@ -24,7 +24,11 @@ jobs:
         run: |
           python data/generate_logs.py
           python eval.py
-      - name: Run pipeline against real-data sample
+      - name: Run pipeline against real-data sample (single day)
         run: |
           python -m sentinellog.adapters.cowrie data/real_sample/cowrie_2019-12-04.sample.jsonl /tmp/real.csv
           python cli.py report /tmp/real.csv --top 5
+      - name: Run independent validation against real-data sample (14 days)
+        run: |
+          python -m sentinellog.adapters.cowrie data/real_sample_14day/*.jsonl /tmp/real14.csv
+          python scripts/independent_validation.py /tmp/real14.csv

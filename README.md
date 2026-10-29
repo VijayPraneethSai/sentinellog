@@ -83,8 +83,19 @@ rates, caught **zero** incidents on real traffic, because real
 credential-stuffing in this sample runs slower (~1 attempt/sec) than the
 rapid-fire rate it was tuned to. The threshold was re-tuned against a
 window/threshold sweep over the real data (`scripts/sweep_threshold.py`),
-with no regression on the synthetic eval afterward. Full writeup,
-including what this validation does and doesn't prove, in
+with no regression on the synthetic eval afterward.
+
+Breaking the real traffic down by behavior (`scripts/explain_unflagged.py`)
+gives a cleaner read than a raw alert count: of 102 attacking source IPs,
+82 only ever made 1-3 attempts (not a burst to catch), and of the 20 that
+mounted a real multi-attempt campaign, the retuned detector caught **100%
+of the 13 that attacked as a dense burst**. The other 7 spread their
+attempts thin instead -- one IP made 624 failed attempts over nearly 10
+hours, never more than 3 in any 2-minute window -- a deliberately
+slow-paced pattern the burst detector isn't designed to catch. That's a
+real, named scope limitation, not a silent miss; see "what I'd add next."
+
+Full writeup, including what this validation does and doesn't prove, in
 [`docs/real_data_validation.md`](docs/real_data_validation.md).
 
 ## Configuration
@@ -134,7 +145,9 @@ config.yaml         # all detector thresholds, documented inline
 cli.py              # `report` command
 eval.py             # incident-level recall + event-level precision/FP audit
 scripts/
-  sweep_threshold.py # window x threshold sweep used to re-tune against real data
+  sweep_threshold.py    # window x threshold sweep used to re-tune against real data
+  characterize_ips.py   # per-source-IP failed-login counts/timing on real data
+  explain_unflagged.py  # splits real attacking IPs into dense-burst vs low-and-slow
 tests/               # unit tests per detector (dense vs sparse bursts, plausible
                        vs impossible travel, baseline-confidence gating)
 .github/workflows/ci.yml  # runs tests + both evals on every push
@@ -142,6 +155,14 @@ tests/               # unit tests per detector (dense vs sparse bursts, plausibl
 
 ## Limitations / what I'd add next
 
+- **No low-and-slow brute-force detector.** The real-data validation
+  found 7 real source IPs (out of 102) spreading hundreds of failed
+  attempts over many hours specifically to stay under any reasonable
+  burst threshold — found and named, not fixed. The fix is a second,
+  independent detector on a much longer window (e.g. 50+ failures
+  against one target over 24h, regardless of density), which the current
+  burst detector deliberately doesn't try to also cover, since conflating
+  the two would blur what each alert means.
 - Detectors are independent rule-based signals, not a fused risk score —
   good for explainability, but a real system would want a calibrated way
   to combine them.

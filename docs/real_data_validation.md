@@ -73,6 +73,29 @@ threshold-setting, not precision/recall. That's the synthetic dataset's
 job, and it's unaffected by this change (see `eval.py` output: still
 38/40 incidents, 95%, after the retune).
 
+**Breaking the 102 source IPs down by actual behavior** (see
+`scripts/explain_unflagged.py`) makes the detector's real coverage
+clearer than a raw alert count does:
+
+- 82 of 102 IPs made only 1-3 failed attempts total across the whole
+  day -- reconnaissance noise, not something a burst detector is meant
+  to catch.
+- 20 IPs mounted a real multi-attempt campaign (4+ attempts). Of those,
+  **13 did it as a dense burst and the detector caught all 13 (100%)**.
+- The remaining **7 spread their attempts thin instead of dense** --
+  one IP (`142.93.232.144`) made **624 failed attempts over nearly 10
+  hours**, never more than 3 in any 120-second window. That's a
+  deliberately slow, "low-and-slow" credential-stuffing pattern, paced
+  specifically to stay under a burst threshold. The detector correctly
+  does not flag it, because it isn't built to -- this is a genuine scope
+  limitation, not a missed detection within the tool's design.
+
+This is a better way to read the validation than "13/102 flagged
+overall": the detector doesn't miss bursts, it has a blind spot to a
+*different* attack pattern (sustained low-rate attempts), which would
+need a second, longer-window rate detector to cover -- see "what I'd
+add next" below.
+
 ## Honest limitations of this validation
 
 - One day, one honeypot, no labels -- this confirms the detector reacts

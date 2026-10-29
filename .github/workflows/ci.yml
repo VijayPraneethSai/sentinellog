@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run unit tests
+        run: python -m pytest tests/ -v
+      - name: Regenerate synthetic dataset and run eval
+        run: |
+          python data/generate_logs.py
+          python eval.py
+      - name: Run pipeline against real-data sample
+        run: |
+          python -m sentinellog.adapters.cowrie data/real_sample/cowrie_2019-12-04.sample.jsonl /tmp/real.csv
+          python cli.py report /tmp/real.csv --top 5

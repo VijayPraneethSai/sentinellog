@@ -73,6 +73,26 @@ impossible-travel detectors (VPN exit-node switches, mobile network
 handoffs) — documented here rather than tuned away, since hiding it would
 make the eval numbers meaningless.
 
+## Real-data validation
+
+Beyond the synthetic eval, the unmodified pipeline was also run against a
+real one-day slice of public Cowrie SSH honeypot traffic (via an adapter
+in `sentinellog/adapters/cowrie.py`). That run exposed a real gap: the
+detector's original threshold, calibrated from published automated-scanner
+rates, caught **zero** incidents on real traffic, because real
+credential-stuffing in this sample runs slower (~1 attempt/sec) than the
+rapid-fire rate it was tuned to. The threshold was re-tuned against a
+window/threshold sweep over the real data (`scripts/sweep_threshold.py`),
+with no regression on the synthetic eval afterward. Full writeup,
+including what this validation does and doesn't prove, in
+[`docs/real_data_validation.md`](docs/real_data_validation.md).
+
+## Configuration
+
+All detector thresholds live in `config.yaml`, not in code — see
+`sentinellog/config.py`. Each one is documented at the point it's set,
+including why it's set there.
+
 ## Usage
 
 ```bash
@@ -81,6 +101,10 @@ python data/generate_logs.py            # (re)generate the sample dataset
 python cli.py report data/auth_log.csv --top 20
 python eval.py                           # precision/recall against ground truth
 python -m pytest tests/ -q               # unit tests per detector
+
+# real-data validation
+python -m sentinellog.adapters.cowrie data/real_sample/cowrie_2019-12-04.sample.jsonl /tmp/real.csv
+python cli.py report /tmp/real.csv --top 10
 ```
 
 Sample report output:
@@ -95,15 +119,25 @@ score  ts                         user    detector            reason
 
 ```
 sentinellog/
-  baseline.py     # per-user trailing baselines (login-hour histogram, home location)
-  detectors.py    # the three detectors + Alert dataclass
+  baseline.py      # per-user trailing baselines (login-hour histogram, home location)
+  config.py        # loads config.yaml into typed detector settings
+  detectors.py     # the three detectors + Alert dataclass
   pipeline.py      # loads data, builds baselines, runs detectors, merges/ranks alerts
+  adapters/
+    cowrie.py       # converts real Cowrie honeypot JSON logs into the pipeline's schema
 data/
-  generate_logs.py # calibrated synthetic log + label generator
-cli.py             # `report` command
-eval.py            # incident-level recall + event-level precision/FP audit
-tests/              # unit tests per detector (dense vs sparse bursts, plausible
-                      vs impossible travel, baseline-confidence gating)
+  generate_logs.py  # calibrated synthetic log + label generator
+  real_sample/       # filtered real honeypot sample + attribution (see docs below)
+docs/
+  real_data_validation.md  # what changed when validated against real traffic, and why
+config.yaml         # all detector thresholds, documented inline
+cli.py              # `report` command
+eval.py             # incident-level recall + event-level precision/FP audit
+scripts/
+  sweep_threshold.py # window x threshold sweep used to re-tune against real data
+tests/               # unit tests per detector (dense vs sparse bursts, plausible
+                       vs impossible travel, baseline-confidence gating)
+.github/workflows/ci.yml  # runs tests + both evals on every push
 ```
 
 ## Limitations / what I'd add next
@@ -114,6 +148,9 @@ tests/              # unit tests per detector (dense vs sparse bursts, plausible
 - No real network/geo data (uses a fixed city list instead of GeoIP
   lookups) — swapping in MaxMind GeoLite2 would be a small change to
   `baseline.py`'s location lookup.
-- Evaluated on synthetic data; next step would be running the same
-  pipeline against a real (even if small) honeypot log sample to see how
-  the false-positive rate holds up against genuine background noise.
+- The real-data validation only covers the brute-force detector (see
+  `docs/real_data_validation.md` for why) — the other two detectors are
+  checked only against the synthetic dataset so far. Next step would be
+  finding a real source with geo/stable-identity signal (a real org's
+  VPN or SSO logs, none of which are public for obvious reasons) to
+  validate those the same way.
